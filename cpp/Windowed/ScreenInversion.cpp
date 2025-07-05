@@ -34,6 +34,7 @@
 #include <wincodec.h>
 #include <magnification.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <tchar.h>
 #include <stdio.h>
 #include <string>
@@ -81,7 +82,7 @@ const char* ShortcutConfig::CONFIG_FILE = "shortcuts.txt";
 // Global variables and strings.
 HINSTANCE           hInst;
 const TCHAR         WindowClassName[] = TEXT("ScreenFilterWindow");
-const TCHAR         WindowTitle[] = TEXT("Screen Filter - Click two points to select area (0=cycle saved, 1-9=load saved)");
+const TCHAR         WindowTitle[] = TEXT("Screen Filter - Click two points to select area (0=cycle saved, 1-9=load saved, Ctrl+N=new window)");
 const UINT          timerInterval = 16; // close to the refresh rate @60hz
 HWND                hwndMag;
 HWND                hwndHost;
@@ -571,6 +572,17 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             if (isFullScreen)
             {
                 GoPartialScreen();
+            }
+        }
+        // Ctrl+N to launch new instance
+        else if (ctrlPressed && wParam == 'N')
+        {
+            // Get the path to the current executable
+            TCHAR exePath[MAX_PATH];
+            if (GetModuleFileName(NULL, exePath, MAX_PATH))
+            {
+                // Launch a new instance
+                ShellExecute(NULL, TEXT("open"), exePath, NULL, NULL, SW_SHOW);
             }
         }
         // Cycle through saved rects
