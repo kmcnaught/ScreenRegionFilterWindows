@@ -531,27 +531,19 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
 {
     switch (message)
     {
-    case WM_NCHITTEST:
-    {
-        // After selection is complete, make client area transparent to clicks
+    case WM_SETCURSOR:
+        // Use crosshair during selection, normal cursor after
         if (selectionState == SELECTION_COMPLETE)
         {
-            LRESULT hitTest = DefWindowProc(hWnd, message, wParam, lParam);
-
-            // Only make the client area transparent, keep frame elements interactive
-            if (hitTest == HTCLIENT)
-            {
-                return HTTRANSPARENT;
-            }
-
-            return hitTest;
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+            return TRUE;
         }
         else
         {
-            return DefWindowProc(hWnd, message, wParam, lParam);
+            SetCursor(LoadCursor(NULL, IDC_CROSS));
+            return TRUE;
         }
-    }
-    break;
+        break;
 
     case WM_LBUTTONDOWN:
     {
