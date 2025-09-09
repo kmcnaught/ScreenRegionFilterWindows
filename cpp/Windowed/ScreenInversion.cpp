@@ -1057,22 +1057,16 @@ void CALLBACK UpdateMagWindow(HWND /*hwnd*/, UINT /*uMsg*/, UINT_PTR /*idEvent*/
     GetWindowRect(hwndHost, &magWindowRectWindow);
     GetClientRect(hwndHost, &magWindowRectClient);
 
-    // Get styles for adjustments
-    LONG titleBarHeight = GetSystemMetrics(SM_CYCAPTION);
-    LONG borderWidth = GetSystemMetrics(SM_CXSIZEFRAME);
-    LONG borderHeight = GetSystemMetrics(SM_CYSIZEFRAME);
-
-    int fudge = 4;
-
-    sourceRect.left = magWindowRectWindow.left + magWindowRectClient.left + borderWidth + fudge;
-    sourceRect.top = magWindowRectWindow.top + magWindowRectClient.top + titleBarHeight + borderHeight + fudge;
-
-    // Calculate the width and height based on client area size
-    int width = (int)((magWindowRectWindow.right - magWindowRectWindow.left) / MAGFACTOR);
-    int height = (int)((magWindowRectWindow.bottom - magWindowRectWindow.top) / MAGFACTOR);
-
-    sourceRect.right = sourceRect.left + width;
-    sourceRect.bottom = sourceRect.top + height;
+    
+    // Calculate source rectangle to capture the exact screen area under the client window
+    // Convert client area to screen coordinates to get the exact underlying screen region
+    POINT clientTopLeft = { 0, 0 };
+    ClientToScreen(hwndHost, &clientTopLeft);
+    
+    sourceRect.left = clientTopLeft.x;
+    sourceRect.top = clientTopLeft.y;
+    sourceRect.right = sourceRect.left + magWindowRectClient.right;
+    sourceRect.bottom = sourceRect.top + magWindowRectClient.bottom;
 
     // Set the source rectangle for the magnifier control.
     MagSetWindowSource(hwndMag, sourceRect);
