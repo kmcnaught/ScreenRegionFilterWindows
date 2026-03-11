@@ -1,4 +1,4 @@
-Screen inversion window
+Screen region filter
 ========================
 
 A small portable utility for applying colour filters to a specific region of your screen, based on the [Windows Magnification Sample program](github.com/microsoft/Windows-classic-samples/tree/main/Samples/Magnification).
