@@ -71,6 +71,7 @@ struct ShortcutConfig {
     UINT escapeKey = VK_ESCAPE;
     UINT globalHotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
     UINT globalHotkeyKey = 'P';
+    int extraGrabSize = 8;  // Extra pixels beyond SM_CXSIZEFRAME for resize hit zone
 
     // File path for config
     static const char* CONFIG_FILE;
@@ -490,6 +491,12 @@ void LoadShortcutConfig()
             shortcuts.globalHotkeyModifiers |= MOD_WIN;
     }
 
+    if (configMap.find("ExtraGrabSize") != configMap.end())
+    {
+        shortcuts.extraGrabSize = std::stoi(configMap["ExtraGrabSize"]);
+        shortcuts.extraGrabSize = max(0, min(100, shortcuts.extraGrabSize));
+    }
+
     configFile.close();
 }
 
@@ -522,6 +529,9 @@ void SaveDefaultShortcutConfig()
     configFile << "GlobalHotkeyKey=P\n";
     configFile << "# Modifier keys: CTRL, SHIFT, ALT, WIN (combine with +)\n";
     configFile << "GlobalHotkeyModifiers=CTRL+SHIFT\n\n";
+
+    configFile << "# Extra pixels beyond the system resize border added to the grab zone (default: 8)\n";
+    configFile << "ExtraGrabSize=8\n\n";
 
     configFile << "# Note: Restart the application after changing these settings\n";
     configFile << "# Rectangle Save/Load: 0=cycle through saved, 1-9=load saved, Ctrl+1-9=save current (Ctrl+0 disabled)\n";
@@ -558,6 +568,37 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
 {
     switch (message)
     {
+    case WM_NCHITTEST:
+    {
+        // Let Windows do the default hit test first
+        LRESULT hit = DefWindowProc(hWnd, message, wParam, lParam);
+
+        // When unpinned, widen the resize grab zone so the edge is easier to grab
+        if (!isPinned && selectionState == SELECTION_COMPLETE && hit == HTCLIENT)
+        {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            RECT rc;
+            GetWindowRect(hWnd, &rc);
+            const int grabSizeH = GetSystemMetrics(SM_CXSIZEFRAME) + shortcuts.extraGrabSize;
+            const int grabSizeV = GetSystemMetrics(SM_CYSIZEFRAME) + shortcuts.extraGrabSize;
+
+            BOOL onLeft   = pt.x < rc.left   + grabSizeH;
+            BOOL onRight  = pt.x > rc.right  - grabSizeH;
+            BOOL onTop    = pt.y < rc.top    + grabSizeV;
+            BOOL onBottom = pt.y > rc.bottom - grabSizeV;
+
+            if      (onLeft  && onTop)    return HTTOPLEFT;
+            else if (onRight && onTop)    return HTTOPRIGHT;
+            else if (onLeft  && onBottom) return HTBOTTOMLEFT;
+            else if (onRight && onBottom) return HTBOTTOMRIGHT;
+            else if (onLeft)              return HTLEFT;
+            else if (onRight)             return HTRIGHT;
+            else if (onTop)               return HTTOP;
+            else if (onBottom)            return HTBOTTOM;
+        }
+        return hit;
+    }
+
     case WM_SETCURSOR:
         // Use crosshair during selection; otherwise let DefWindowProc set the
         // appropriate cursor (resize arrows on edges, arrow in client area).
