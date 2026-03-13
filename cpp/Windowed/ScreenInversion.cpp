@@ -559,18 +559,14 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
     switch (message)
     {
     case WM_SETCURSOR:
-        // Use crosshair during selection, normal cursor after
-        if (selectionState == SELECTION_COMPLETE)
-        {
-            SetCursor(LoadCursor(NULL, IDC_ARROW));
-            return TRUE;
-        }
-        else
+        // Use crosshair during selection; otherwise let DefWindowProc set the
+        // appropriate cursor (resize arrows on edges, arrow in client area).
+        if (selectionState != SELECTION_COMPLETE)
         {
             SetCursor(LoadCursor(NULL, IDC_CROSS));
             return TRUE;
         }
-        break;
+        return DefWindowProc(hWnd, message, wParam, lParam);
 
     case WM_LBUTTONDOWN:
     {
