@@ -14,6 +14,7 @@ This is a Windows screen inversion/filter utility built using C++ and the Window
 - **Rectangle Save/Load**: Save rectangles with Ctrl+0-9, load with 0-9 keys
 - **Dark Mode Support**: Windows 10+ dark mode theming for title bar
 - **Brightness Controls**: Configurable keyboard controls for brightness adjustment
+- **Multi-Monitor Support**: Selection overlay and click handling work correctly across multiple monitors
 
 ## Build System
 
@@ -55,6 +56,7 @@ msbuild cpp/MagnifierSample.sln /p:Configuration=Release /p:Platform=x64
 ### Key Files
 
 - `cpp/Windowed/ScreenInversion.cpp`: Main application logic, window management, magnification API usage
+- `cpp/Windowed/SavedRectanglesManager.h` / `SavedRectanglesManager.cpp`: Manages save/load of named rectangle slots
 - `cpp/Windowed/shortcuts.txt`: Keyboard shortcut configuration
 - `cpp/Windowed/saved_rects.txt`: Saved rectangle coordinates storage
 
@@ -84,4 +86,4 @@ Stores rectangle coordinates for quick recall (0-9 slots)
 
 - Debug builds: `cpp/x64/Debug/`
 - Release builds: `cpp/x64/Release/`
-- Final executable names vary by configuration (MagnifierSample.exe, ScreenFilterWindow.exe, ScreenInversionWindow.exe)
+- Executable: `ScreenFilterWindow.exe` (both Debug and Release)
