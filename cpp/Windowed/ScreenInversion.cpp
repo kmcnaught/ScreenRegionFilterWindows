@@ -143,25 +143,30 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
     _In_ LPSTR     /*lpCmdLine*/,
     _In_ int       nCmdShow)
 {
-    // Intentionally ignore nCmdShow as we need to start fullscreen 
-    // to capture initial points to define rectangle. 
-    (void)nCmdShow; 
+    // Intentionally ignore nCmdShow as we need to start fullscreen
+    // to capture initial points to define rectangle.
+    (void)nCmdShow;
+
+    // Must be called before any window APIs so all coordinates are physical pixels
+    // throughout — required for correct multi-monitor / mixed-DPI behaviour.
+    // The Magnification API always works in physical pixels, so this keeps everything consistent.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     if (FALSE == MagInitialize())
     {
         return 0;
     }
 
-    // Check if any other instance is already in selection mode (maximized)
+    // Check if any other instance is already in selection mode
     HWND existingWindow = NULL;
     do {
         existingWindow = FindWindowEx(NULL, existingWindow, WindowClassName, NULL);
-        if (existingWindow && IsZoomed(existingWindow))
+        if (existingWindow && GetProp(existingWindow, TEXT("SelectionMode")))
         {
             // Another instance is already selecting, exit this instance
             MagUninitialize();
             return 0;
-        }   
+        }
     } while (existingWindow != NULL);
 
     // Load shortcut configuration and saved rectangles
@@ -176,9 +181,30 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
     // Apply dark mode theming
     ApplyDarkModeToWindow(hwndHost);
 
-    // Show maximized instead of using nCmdShow
-    ShowWindow(hwndHost, SW_MAXIMIZE);
-    UpdateWindow(hwndHost);
+    // Position the selection overlay to span all monitors.
+    // Push non-client decorations off-screen so the client area covers the full virtual desktop.
+    // Do NOT set WS_EX_TRANSPARENT here — we need to receive clicks for selection.
+    {
+        int xVirt    = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int yVirt    = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int wVirt    = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int hVirt    = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        int xBorder  = GetSystemMetrics(SM_CXFRAME);
+        int yCaption = GetSystemMetrics(SM_CYCAPTION);
+        int yBorder  = GetSystemMetrics(SM_CYFRAME);
+
+        SetWindowLong(hwndHost, GWL_STYLE, WS_CAPTION | WS_SYSMENU);
+        SetWindowPos(hwndHost, HWND_TOPMOST,
+            xVirt - xBorder,
+            yVirt - yBorder - yCaption,
+            wVirt + 2 * xBorder,
+            hVirt + 2 * yBorder + yCaption,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        UpdateWindow(hwndHost);
+    }
+
+    // Mark this window as being in selection mode so other instances can detect it
+    SetProp(hwndHost, TEXT("SelectionMode"), (HANDLE)1);
 
     // Register global hotkey using configured values
     RegisterHotKey(hwndHost, HOTKEY_TOGGLE_PIN,
@@ -841,6 +867,9 @@ void HandleRectangleSelection(POINT clickPoint)
         secondPoint = clickPoint;
         selectionState = SELECTION_COMPLETE;
 
+        // No longer in selection mode — allow new instances to launch
+        RemoveProp(hwndHost, TEXT("SelectionMode"));
+
         // Calculate the selected rectangle
         selectedRect.left = min(firstPoint.x, secondPoint.x);
         selectedRect.top = min(firstPoint.y, secondPoint.y);
@@ -1095,20 +1124,20 @@ void GoFullScreen()
     // Give the window a system menu so it can be closed on the taskbar.
     SetWindowLong(hwndHost, GWL_STYLE, WS_CAPTION | WS_SYSMENU);
 
-    // Calculate the span of the display area.
-    HDC hDC = GetDC(NULL);
-    int xSpan = GetSystemMetrics(SM_CXSCREEN);
-    int ySpan = GetSystemMetrics(SM_CYSCREEN);
-    ReleaseDC(NULL, hDC);
+    // Calculate the span of the full virtual desktop (all monitors).
+    int xVirt    = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int yVirt    = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int xSpan    = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int ySpan    = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     // Calculate the size of system elements.
-    int xBorder = GetSystemMetrics(SM_CXFRAME);
+    int xBorder  = GetSystemMetrics(SM_CXFRAME);
     int yCaption = GetSystemMetrics(SM_CYCAPTION);
-    int yBorder = GetSystemMetrics(SM_CYFRAME);
+    int yBorder  = GetSystemMetrics(SM_CYFRAME);
 
-    // Calculate the window origin and span for full-screen mode.
-    int xOrigin = -xBorder;
-    int yOrigin = -yBorder - yCaption;
+    // Calculate the window origin and span for full-screen mode across all monitors.
+    int xOrigin = xVirt - xBorder;
+    int yOrigin = yVirt - yBorder - yCaption;
     xSpan += 2 * xBorder;
     ySpan += 2 * yBorder + yCaption;
 
