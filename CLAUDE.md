@@ -41,7 +41,6 @@ msbuild cpp/MagnifierSample.sln /p:Configuration=Release /p:Platform=x64
 
 - Visual Studio 2022 (Platform Toolset v143)
 - Windows 10 SDK (minimum build 17763 for dark mode support)
-- Elevated privileges required for execution
 - Links against `magnification.lib` and `dwmapi.lib`
 
 ## Architecture
@@ -77,7 +76,6 @@ Stores rectangle coordinates for quick recall (0-9 slots)
 ## Development Notes
 
 - Project originally named "MagnifierSample" but renamed to "ScreenFilterWindow"
-- Requires elevated privileges due to Magnification API requirements
 - Uses Windows 10+ APIs for dark mode support
 - Targets x64 platform primarily
 - Warning level set to Level4 with warnings treated as errors (except Debug x64 configuration)
