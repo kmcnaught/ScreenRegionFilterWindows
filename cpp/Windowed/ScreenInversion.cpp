@@ -200,7 +200,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
             yVirt - yBorder - yCaption,
             wVirt + 2 * xBorder,
             hVirt + 2 * yBorder + yCaption,
-            SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED);
         UpdateWindow(hwndHost);
     }
 
