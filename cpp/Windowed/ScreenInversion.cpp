@@ -202,6 +202,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance,
             hVirt + 2 * yBorder + yCaption,
             SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         UpdateWindow(hwndHost);
+        SetForegroundWindow(hwndHost);
     }
 
     // Mark this window as being in selection mode so other instances can detect it
@@ -625,6 +626,13 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
     }
     break;
 
+    case WM_RBUTTONDOWN:
+        if (selectionState != SELECTION_COMPLETE)
+        {
+            DestroyWindow(hWnd);
+        }
+        break;
+
     case WM_KEYDOWN:
     {
         // Check for Ctrl key state
@@ -632,7 +640,11 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
 
         if (wParam == shortcuts.escapeKey)
         {
-            if (isFullScreen)
+            if (selectionState != SELECTION_COMPLETE)
+            {
+                DestroyWindow(hWnd);
+            }
+            else if (isFullScreen)
             {
                 GoPartialScreen();
             }
@@ -766,7 +778,7 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
         break;
 
     case WM_DESTROY:
-        // Unregister the global hotkey
+        RemoveProp(hwndHost, TEXT("SelectionMode"));
         UnregisterHotKey(hwndHost, HOTKEY_TOGGLE_PIN);
         PostQuitMessage(0);
         break;
