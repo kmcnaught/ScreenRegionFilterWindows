@@ -72,6 +72,8 @@ struct ShortcutConfig {
     UINT globalHotkeyModifiers = MOD_CONTROL | MOD_SHIFT;
     UINT globalHotkeyKey = 'P';
     int extraGrabSize = 8;  // Extra pixels beyond SM_CXSIZEFRAME for resize hit zone
+    int pinnedBorderSize = 6;            // Thickness (px) of the drag/resize frame shown while pinned
+    COLORREF pinnedBorderColor = RGB(80, 80, 80); // Colour of the pinned frame
 
     // File path for config
     static const char* CONFIG_FILE;
@@ -111,6 +113,32 @@ SavedRectanglesManager savedRects;
 int                 currentCycleSlot = 1; // Start cycling from slot 1
 
 #define HOTKEY_TOGGLE_PIN 1 // Hotkey ID for global shortcut
+
+// --- Borderless pinned mode (Roy Leppink modification) ---------------------
+// While pinned (click-through), the host window has no title bar and no
+// system frame. A separate, thin, non-transparent frame window is drawn
+// around the filtered area so it can still be moved and resized:
+//   - top edge (middle part) or Alt+drag on any edge : move
+//   - left/right/bottom edges                          : resize
+//   - corners (incl. top corners)                      : diagonal resize
+const TCHAR         FrameClassName[] = TEXT("ScreenFilterPinnedFrame");
+HWND                hwndFrame = NULL;
+BOOL                borderlessPinned = FALSE;  // TRUE while pinned in borderless mode
+const int           MIN_FILTER_SIZE = 40;      // Minimum width/height of filter area (px)
+
+enum FrameDragMode { DRAG_NONE, DRAG_MOVE, DRAG_LEFT, DRAG_RIGHT, DRAG_TOP, DRAG_BOTTOM,
+                     DRAG_TOPLEFT, DRAG_TOPRIGHT, DRAG_BOTTOMLEFT, DRAG_BOTTOMRIGHT };
+FrameDragMode       frameDragMode = DRAG_NONE;
+POINT               frameDragStartCursor = { 0, 0 };
+RECT                frameDragStartRect = { 0, 0, 0, 0 };   // inner (filter) rect at drag start
+
+LRESULT CALLBACK    FrameWndProc(HWND, UINT, WPARAM, LPARAM);
+BOOL                CreatePinnedFrame(HINSTANCE hinst);
+void                PositionPinnedFrame(const RECT& inner);
+void                SetFilterInnerRect(const RECT& inner);
+void                EnterBorderlessPinned();
+void                ExitBorderlessPinned();
+FrameDragMode       FrameHitZone(HWND hWnd, POINT ptScreen);
 
 // Forward declarations.
 ATOM                RegisterHostWindowClass(HINSTANCE hInstance);
@@ -498,6 +526,29 @@ void LoadShortcutConfig()
         shortcuts.extraGrabSize = max(0, min(100, shortcuts.extraGrabSize));
     }
 
+    if (configMap.find("PinnedBorderSize") != configMap.end())
+    {
+        shortcuts.pinnedBorderSize = atoi(configMap["PinnedBorderSize"].c_str());
+        shortcuts.pinnedBorderSize = max(2, min(40, shortcuts.pinnedBorderSize));
+    }
+
+    if (configMap.find("PinnedBorderColor") != configMap.end())
+    {
+        // Format: R,G,B  (e.g. 80,80,80)
+        const char* p = configMap["PinnedBorderColor"].c_str();
+        char* end1 = NULL;
+        char* end2 = NULL;
+        char* end3 = NULL;
+        long r = strtol(p, &end1, 10);
+        long g = (end1 && *end1 == ',') ? strtol(end1 + 1, &end2, 10) : -1;
+        long b = (end2 && *end2 == ',') ? strtol(end2 + 1, &end3, 10) : -1;
+        if (end1 != p && end2 && end3 && g >= 0 && b >= 0)
+        {
+            r = max(0, min(255, r)); g = max(0, min(255, g)); b = max(0, min(255, b));
+            shortcuts.pinnedBorderColor = RGB(r, g, b);
+        }
+    }
+
     configFile.close();
 }
 
@@ -533,6 +584,12 @@ void SaveDefaultShortcutConfig()
 
     configFile << "# Extra pixels beyond the system resize border added to the grab zone (default: 8)\n";
     configFile << "ExtraGrabSize=8\n\n";
+
+    configFile << "# Pinned (click-through) mode: no title bar, only a thin frame to move/resize\n";
+    configFile << "# Frame thickness in pixels (2-40, default: 6)\n";
+    configFile << "PinnedBorderSize=6\n";
+    configFile << "# Frame colour as R,G,B (default: 80,80,80)\n";
+    configFile << "PinnedBorderColor=80,80,80\n\n";
 
     configFile << "# Note: Restart the application after changing these settings\n";
     configFile << "# Rectangle Save/Load: 0=cycle through saved, 1-9=load saved, Ctrl+1-9=save current (Ctrl+0 disabled)\n";
@@ -719,6 +776,16 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             // Toggle pin state
             isPinned = !isPinned;
 
+            // Borderless pinned mode (not used in full-screen mode)
+            if (isPinned && !isFullScreen)
+            {
+                EnterBorderlessPinned();
+            }
+            else if (!isPinned && borderlessPinned)
+            {
+                ExitBorderlessPinned();
+            }
+
             // Update the window's extended style based on pin state
             LONG exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
             if (isPinned)
@@ -736,11 +803,11 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
                 HWND windowUnderCursor = WindowFromPoint(cursorPos);
 
                 // If we found a valid window that's not us, set focus to it
-                if (windowUnderCursor && windowUnderCursor != hWnd && windowUnderCursor != hwndMag)
+                if (windowUnderCursor && windowUnderCursor != hWnd && windowUnderCursor != hwndMag && windowUnderCursor != hwndFrame)
                 {
                     // Get the top-level parent window
                     HWND topWindow = GetAncestor(windowUnderCursor, GA_ROOT);
-                    if (topWindow && topWindow != hWnd)
+                    if (topWindow && topWindow != hWnd && topWindow != hwndFrame)
                     {
                         SetForegroundWindow(topWindow);
                     }
@@ -778,6 +845,11 @@ LRESULT CALLBACK HostWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
         break;
 
     case WM_DESTROY:
+        if (hwndFrame)
+        {
+            DestroyWindow(hwndFrame);
+            hwndFrame = NULL;
+        }
         RemoveProp(hwndHost, TEXT("SelectionMode"));
         UnregisterHotKey(hwndHost, HOTKEY_TOGGLE_PIN);
         PostQuitMessage(0);
@@ -866,6 +938,9 @@ BOOL SetupScreenFilter(HINSTANCE hinst)
 
     // Store instance handle
     hInst = hinst;
+
+    // Create the (initially hidden) frame used in borderless pinned mode
+    CreatePinnedFrame(hinst);
 
     // Make the window transparent initially so user can see underlying UI for selection
     SetLayeredWindowAttributes(hwndHost, 0, 1, LWA_ALPHA);
@@ -1152,6 +1227,11 @@ void CALLBACK UpdateMagWindow(HWND /*hwnd*/, UINT /*uMsg*/, UINT_PTR /*idEvent*/
     // Reclaim topmost status, to prevent unmagnified menus from remaining in view. 
     SetWindowPos(hwndHost, HWND_TOPMOST, 0, 0, 0, 0,
         SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+    if (borderlessPinned && hwndFrame && frameDragMode == DRAG_NONE)
+    {
+        SetWindowPos(hwndFrame, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+    }
 
     // Force redraw.
     InvalidateRect(hwndMag, NULL, TRUE);
@@ -1212,4 +1292,348 @@ void GoPartialScreen()
 
     // Reapply dark mode after style changes
     ApplyDarkModeToWindow(hwndHost);
+}
+//
+// ===========================================================================
+// Borderless pinned mode
+// ===========================================================================
+//
+
+//
+// FUNCTION: CreatePinnedFrame()
+//
+// PURPOSE: Registers the frame class and creates the hidden frame window that is
+//          shown around the filter area while the filter is pinned (click-through).
+//
+BOOL CreatePinnedFrame(HINSTANCE hinst)
+{
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = FrameWndProc;
+    wc.hInstance = hinst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;  // painted in WM_PAINT
+    wc.lpszClassName = FrameClassName;
+    RegisterClassEx(&wc);     // may already be registered: ignore result
+
+    // WS_EX_TOOLWINDOW: no taskbar button / Alt+Tab entry
+    // WS_EX_NOACTIVATE: dragging the frame does not steal focus from the ERP
+    hwndFrame = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        FrameClassName, TEXT("Screen Filter Frame"),
+        WS_POPUP,
+        0, 0, 10, 10,
+        hwndHost, NULL, hinst, NULL);
+
+    return hwndFrame != NULL;
+}
+
+//
+// FUNCTION: PositionPinnedFrame()
+//
+// PURPOSE: Places the frame window around the given inner (filter) rectangle and
+//          cuts out the inner part, so only the border remains (hollow window).
+//
+void PositionPinnedFrame(const RECT& inner)
+{
+    if (!hwndFrame)
+        return;
+
+    const int b = shortcuts.pinnedBorderSize;
+    const int outerW = (inner.right - inner.left) + 2 * b;
+    const int outerH = (inner.bottom - inner.top) + 2 * b;
+
+    // Hollow region in window coordinates: outer rectangle minus inner rectangle
+    HRGN outerRgn = CreateRectRgn(0, 0, outerW, outerH);
+    HRGN innerRgn = CreateRectRgn(b, b, outerW - b, outerH - b);
+    CombineRgn(outerRgn, outerRgn, innerRgn, RGN_DIFF);
+    DeleteObject(innerRgn);
+
+    SetWindowPos(hwndFrame, HWND_TOPMOST,
+        inner.left - b, inner.top - b, outerW, outerH,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    // The system owns the region after a successful SetWindowRgn call
+    if (!SetWindowRgn(hwndFrame, outerRgn, TRUE))
+    {
+        DeleteObject(outerRgn);
+    }
+    InvalidateRect(hwndFrame, NULL, TRUE);
+}
+
+//
+// FUNCTION: SetFilterInnerRect()
+//
+// PURPOSE: Moves/resizes the borderless (pinned) host window to the given screen
+//          rectangle and repositions the frame around it.
+//
+void SetFilterInnerRect(const RECT& inner)
+{
+    SetWindowPos(hwndHost, HWND_TOPMOST,
+        inner.left, inner.top,
+        inner.right - inner.left, inner.bottom - inner.top,
+        SWP_NOACTIVATE);
+    PositionPinnedFrame(inner);
+}
+
+//
+// FUNCTION: EnterBorderlessPinned()
+//
+// PURPOSE: Removes title bar and system frame from the host window while keeping
+//          the filtered screen area at exactly the same position and size.
+//
+void EnterBorderlessPinned()
+{
+    // Current filtered area (client area) in screen coordinates
+    RECT client;
+    GetClientRect(hwndHost, &client);
+    POINT tl = { 0, 0 };
+    ClientToScreen(hwndHost, &tl);
+    RECT inner = { tl.x, tl.y, tl.x + client.right, tl.y + client.bottom };
+
+    // Popup style: no caption, no sizing border
+    SetWindowLong(hwndHost, GWL_STYLE, WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE);
+    SetWindowPos(hwndHost, HWND_TOPMOST,
+        inner.left, inner.top,
+        inner.right - inner.left, inner.bottom - inner.top,
+        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+
+    borderlessPinned = TRUE;
+    PositionPinnedFrame(inner);
+}
+
+//
+// FUNCTION: ExitBorderlessPinned()
+//
+// PURPOSE: Restores the normal window (title bar + sizing frame) so that the
+//          filtered area stays at the position/size it had while pinned.
+//
+void ExitBorderlessPinned()
+{
+    borderlessPinned = FALSE;
+    frameDragMode = DRAG_NONE;
+    if (GetCapture() == hwndFrame)
+        ReleaseCapture();
+
+    if (hwndFrame)
+        ShowWindow(hwndFrame, SW_HIDE);
+
+    // In borderless mode the window rectangle equals the filtered area
+    RECT inner;
+    GetWindowRect(hwndHost, &inner);
+
+    // Calculate the outer window rectangle for the normal style at this monitor's DPI
+    RECT outer = inner;
+    const DWORD style = RESTOREDWINDOWSTYLES;
+    const DWORD exStyle = (DWORD)GetWindowLong(hwndHost, GWL_EXSTYLE);
+    UINT dpi = GetDpiForWindow(hwndHost);
+    if (dpi == 0)
+        dpi = 96;
+    AdjustWindowRectExForDpi(&outer, style, FALSE, exStyle, dpi);
+
+    SetWindowLong(hwndHost, GWL_STYLE, style | WS_VISIBLE);
+    SetWindowPos(hwndHost, HWND_TOPMOST,
+        outer.left, outer.top,
+        outer.right - outer.left, outer.bottom - outer.top,
+        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+
+    // Reapply dark mode after style changes
+    ApplyDarkModeToWindow(hwndHost);
+}
+
+//
+// FUNCTION: FrameHitZone()
+//
+// PURPOSE: Determines which drag action belongs to a point on the frame.
+//
+FrameDragMode FrameHitZone(HWND hWnd, POINT ptScreen)
+{
+    RECT rc;
+    GetWindowRect(hWnd, &rc);
+    const int x = ptScreen.x - rc.left;
+    const int y = ptScreen.y - rc.top;
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    const int b = shortcuts.pinnedBorderSize;
+    const int corner = max(24, 4 * b);   // length of the corner grab zones
+
+    // Alt + drag anywhere on the frame = move
+    if (GetKeyState(VK_MENU) & 0x8000)
+        return DRAG_MOVE;
+
+    const BOOL nearLeft   = x < corner;
+    const BOOL nearRight  = x >= w - corner;
+    const BOOL nearTop    = y < corner;
+    const BOOL nearBottom = y >= h - corner;
+
+    if (y < b)                      // top edge
+    {
+        if (nearLeft)  return DRAG_TOPLEFT;
+        if (nearRight) return DRAG_TOPRIGHT;
+        return DRAG_MOVE;
+    }
+    if (y >= h - b)                 // bottom edge
+    {
+        if (nearLeft)  return DRAG_BOTTOMLEFT;
+        if (nearRight) return DRAG_BOTTOMRIGHT;
+        return DRAG_BOTTOM;
+    }
+    if (x < b)                      // left edge
+    {
+        if (nearTop)    return DRAG_TOPLEFT;
+        if (nearBottom) return DRAG_BOTTOMLEFT;
+        return DRAG_LEFT;
+    }
+    if (x >= w - b)                 // right edge
+    {
+        if (nearTop)    return DRAG_TOPRIGHT;
+        if (nearBottom) return DRAG_BOTTOMRIGHT;
+        return DRAG_RIGHT;
+    }
+    return DRAG_NONE;
+}
+
+//
+// FUNCTION: FrameWndProc()
+//
+// PURPOSE: Window procedure of the pinned frame: painting, cursors, move/resize.
+//
+LRESULT CALLBACK FrameWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_MOUSEACTIVATE:
+        // Never activate: keep keyboard focus in the application underneath
+        return MA_NOACTIVATE;
+
+    case WM_SETCURSOR:
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        FrameDragMode zone = (frameDragMode != DRAG_NONE) ? frameDragMode : FrameHitZone(hWnd, pt);
+        LPCTSTR cursor = IDC_ARROW;
+        switch (zone)
+        {
+        case DRAG_MOVE:                                   cursor = IDC_SIZEALL; break;
+        case DRAG_LEFT:   case DRAG_RIGHT:                cursor = IDC_SIZEWE;  break;
+        case DRAG_TOP:    case DRAG_BOTTOM:               cursor = IDC_SIZENS;  break;
+        case DRAG_TOPLEFT: case DRAG_BOTTOMRIGHT:         cursor = IDC_SIZENWSE; break;
+        case DRAG_TOPRIGHT: case DRAG_BOTTOMLEFT:         cursor = IDC_SIZENESW; break;
+        default: break;
+        }
+        SetCursor(LoadCursor(NULL, cursor));
+        return TRUE;
+    }
+
+    case WM_LBUTTONDOWN:
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        frameDragMode = FrameHitZone(hWnd, pt);
+        if (frameDragMode != DRAG_NONE)
+        {
+            frameDragStartCursor = pt;
+            GetWindowRect(hwndHost, &frameDragStartRect);   // host == inner rect while pinned
+            SetCapture(hWnd);
+        }
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+        if (frameDragMode != DRAG_NONE && GetCapture() == hWnd)
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            const int dx = pt.x - frameDragStartCursor.x;
+            const int dy = pt.y - frameDragStartCursor.y;
+            RECT r = frameDragStartRect;
+
+            switch (frameDragMode)
+            {
+            case DRAG_MOVE:
+                OffsetRect(&r, dx, dy);
+                break;
+            case DRAG_LEFT:        r.left += dx; break;
+            case DRAG_RIGHT:       r.right += dx; break;
+            case DRAG_TOP:         r.top += dy; break;
+            case DRAG_BOTTOM:      r.bottom += dy; break;
+            case DRAG_TOPLEFT:     r.left += dx;  r.top += dy; break;
+            case DRAG_TOPRIGHT:    r.right += dx; r.top += dy; break;
+            case DRAG_BOTTOMLEFT:  r.left += dx;  r.bottom += dy; break;
+            case DRAG_BOTTOMRIGHT: r.right += dx; r.bottom += dy; break;
+            default: break;
+            }
+
+            // Enforce minimum size by clamping the edge that is being dragged
+            if (r.right - r.left < MIN_FILTER_SIZE)
+            {
+                if (frameDragMode == DRAG_LEFT || frameDragMode == DRAG_TOPLEFT || frameDragMode == DRAG_BOTTOMLEFT)
+                    r.left = r.right - MIN_FILTER_SIZE;
+                else
+                    r.right = r.left + MIN_FILTER_SIZE;
+            }
+            if (r.bottom - r.top < MIN_FILTER_SIZE)
+            {
+                if (frameDragMode == DRAG_TOP || frameDragMode == DRAG_TOPLEFT || frameDragMode == DRAG_TOPRIGHT)
+                    r.top = r.bottom - MIN_FILTER_SIZE;
+                else
+                    r.bottom = r.top + MIN_FILTER_SIZE;
+            }
+
+            SetFilterInnerRect(r);
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (GetCapture() == hWnd)
+            ReleaseCapture();
+        frameDragMode = DRAG_NONE;
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        frameDragMode = DRAG_NONE;
+        return 0;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+
+        HBRUSH brush = CreateSolidBrush(shortcuts.pinnedBorderColor);
+        FillRect(hdc, &rc, brush);
+        DeleteObject(brush);
+
+        // Small lighter grip in the middle of the top edge, indicating "drag to move"
+        const int b = shortcuts.pinnedBorderSize;
+        const int gripW = min(60, max(0, (int)rc.right - 2 * max(24, 4 * b) - 8));
+        if (gripW > 0 && b >= 3)
+        {
+            const int gx = (rc.right - gripW) / 2;
+            RECT grip = { gx, b / 3, gx + gripW, b - b / 3 };
+            if (grip.bottom <= grip.top)
+                grip.bottom = grip.top + 1;
+            const BYTE rr = (BYTE)min(255, GetRValue(shortcuts.pinnedBorderColor) + 70);
+            const BYTE gg = (BYTE)min(255, GetGValue(shortcuts.pinnedBorderColor) + 70);
+            const BYTE bb = (BYTE)min(255, GetBValue(shortcuts.pinnedBorderColor) + 70);
+            HBRUSH gripBrush = CreateSolidBrush(RGB(rr, gg, bb));
+            FillRect(hdc, &grip, gripBrush);
+            DeleteObject(gripBrush);
+        }
+
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    case WM_CLOSE:
+        // Frame is owned by the host window; never close it independently
+        return 0;
+
+    default:
+        break;
+    }
+    return DefWindowProc(hWnd, message, wParam, lParam);
 }

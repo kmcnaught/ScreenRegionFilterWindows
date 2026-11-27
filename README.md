@@ -31,7 +31,18 @@ These can be combined - for example, inversion + 60% brightness, or grayscale + 
 |-----|--------|
 | `Ctrl+Shift+P` | Toggle pin/unpin (global hotkey, works even when the window doesn't have focus) |
 
-When **pinned**, the filter overlay becomes transparent to mouse and keyboard input — you can interact normally with whatever is underneath. The title bar remains draggable so you can reposition the window while pinned. When **unpinned**, focus returns to the filter window so you can adjust settings.
+When **pinned**, the filter overlay becomes transparent to mouse and keyboard input — you can interact normally with whatever is underneath.
+
+**Borderless pinned mode (v1.1):** while pinned, the title bar and system frame are removed. Only a thin frame remains around the filtered area (the filtered area itself does not move):
+
+| Frame action | Result |
+|---|---|
+| Drag the top edge (middle part, with grip) | Move the filter |
+| Alt + drag any edge | Move the filter |
+| Drag the left / right / bottom edge | Resize |
+| Drag a corner (also the top corners) | Resize diagonally |
+
+When unpinned, the normal title bar returns at the new position/size. Frame thickness and colour are configurable in `shortcuts.txt` (`PinnedBorderSize`, `PinnedBorderColor`). Borderless mode is not used when the window is in full-screen mode. When **unpinned**, focus returns to the filter window so you can adjust settings.
 
 ### Saving and loading presets
 
